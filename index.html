@@ -535,7 +535,6 @@
               </h3>
               <p class="text-xs text-slate-500">Menampilkan hingga 500 tapping RFID terbaru secara real-time</p>
             </div>
-            <!-- Shortcut Cetak Laporan untuk Admin telah disembunyikan / dihapus agar hanya Operator yang dapat mencetak -->
           </div>
           
           <!-- Filter Controls -->
@@ -636,6 +635,13 @@
   </footer>
 
   <script>
+    // ==============================================================================
+    // KONFIGURASI DEFAULT URL API GOOGLE SKRIP (MENGURANGI REPOT INPUT DI HP ANDROID)
+    // Ganti nilai "MASUKKAN_URL_WEB_APP_ANDA_DI_SINI" di bawah ini dengan URL Web App Anda
+    // Contoh: "https://script.google.com/macros/s/AKfycbz_XXXXXXXXXXXXXX_XXXXXXXXXXXX/exec"
+    // ==============================================================================
+    const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbwHyFAMuiQUjbZvoT_BIqPuXScHooB04aLDm4sbtsB7-QuE4pPpcEKJOc1JImmUd5vU_A/exec";
+
     // State Aplikasi
     let currentUser = null;
     let cachedOfficers = [];
@@ -644,10 +650,6 @@
     let cachedLogs = [];
     let isWebNFCAvailable = false;
     let activeNFCScanMode = "PATROL";
-
-    // Client-side local double tap prevention state (2 Menit / 120 Detik Cooldown)
-    let lastTapTimes = {};
-    const TAPPING_COOLDOWN_MS = 120000; 
 
     // Auto-refresh timer reference
     let autoRefreshInterval = null;
@@ -675,9 +677,11 @@
       }
       
       async _execute(actionName, args) {
-        let gasWebAppUrl = localStorage.getItem("gas_api_url") || "";
+        // Cek LocalStorage terlebih dahulu, jika kosong gunakan DEFAULT_GAS_URL bawaan
+        let gasWebAppUrl = localStorage.getItem("gas_api_url") || DEFAULT_GAS_URL;
         
-        if (!gasWebAppUrl) {
+        // Validasi jika URL masih default bawaan placeholder atau kosong sama sekali
+        if (!gasWebAppUrl || gasWebAppUrl === "" || gasWebAppUrl === "MASUKKAN_URL_WEB_APP_ANDA_DI_SINI") {
           document.getElementById("loadingOverlay").classList.add("hidden");
           toggleApiModal(true);
           if (this.failureHandler) this.failureHandler("URL Web App belum diatur.");
@@ -755,9 +759,9 @@
       
       if (show) {
         modal.classList.remove("hidden");
-        const savedUrl = localStorage.getItem("gas_api_url") || "";
+        const savedUrl = localStorage.getItem("gas_api_url") || (DEFAULT_GAS_URL !== "MASUKKAN_URL_WEB_APP_ANDA_DI_SINI" ? DEFAULT_GAS_URL : "");
         document.getElementById("configApiUrlInput").value = savedUrl;
-        if (savedUrl) {
+        if (savedUrl || DEFAULT_GAS_URL !== "MASUKKAN_URL_WEB_APP_ANDA_DI_SINI") {
           closeBtn.classList.remove("hidden");
         } else {
           closeBtn.classList.add("hidden");
@@ -800,7 +804,7 @@
       checkWebNFCSupport();
       showSection("loginSection");
       
-      // Listen to print event to populate print date automatically
+      // Sinkronisasi otomatis detail cetak
       window.addEventListener('beforeprint', () => {
         if (currentUser) {
           document.getElementById("printUser").innerText = `${currentUser.name} (${currentUser.role})`;
@@ -808,7 +812,7 @@
         }
         document.getElementById("printTime").innerText = new Date().toLocaleString('id-ID');
         
-        // Populate filter labels
+        // Populasi label filter aktif
         const sDate = document.getElementById("filterOpStartDate").value || "Semua Tanggal";
         const eDate = document.getElementById("filterOpEndDate").value || "Semua Tanggal";
         document.getElementById("printFilterDate").innerText = `${sDate} s/d ${eDate}`;
@@ -824,7 +828,7 @@
       });
 
       if (!('NDEFReader' in window)) {
-        showToast("WebNFC tidak didukung langsung. Gunakan mode manual jika menggunakan PC atau browser non-Chrome Android.", "warning");
+        showToast("WebNFC tidak didukung langsung. Gunakan Chrome Android.", "warning");
       }
     });
 
@@ -855,7 +859,7 @@
     async function triggerWebNFCScan(mode = "PATROL") {
       activeNFCScanMode = mode;
       if (!isWebNFCAvailable) {
-        showToast("WebNFC tidak didukung pada browser Anda. Gunakan form input manual di bawah.", "warning");
+        showToast("WebNFC tidak didukung pada browser Anda.", "warning");
         if (currentUser && currentUser.role === "Admin") {
           toggleManualInput("adminManualContainer", true);
         } else {
@@ -1174,21 +1178,18 @@
     }
 
     function populateOperatorFilterDropdowns() {
-      // 1. Petugas
       const opOfficerSelect = document.getElementById("filterOpOfficer");
       opOfficerSelect.innerHTML = '<option value="">-- Semua Petugas --</option>';
       cachedOfficers.forEach(o => {
         opOfficerSelect.innerHTML += `<option value="${o.id}">${o.name} (${o.id})</option>`;
       });
 
-      // 2. Checkpoint
       const opCheckSelect = document.getElementById("filterOpCheckpoint");
       opCheckSelect.innerHTML = '<option value="">-- Semua Checkpoint --</option>';
       cachedCheckpoints.forEach(c => {
         opCheckSelect.innerHTML += `<option value="${c.uid}">${c.name}</option>`;
       });
 
-      // 3. Shift
       const opShiftSelect = document.getElementById("filterOpShift");
       opShiftSelect.innerHTML = '<option value="">-- Semua Shift --</option>';
       cachedSchedules.forEach(s => {
@@ -1203,41 +1204,34 @@
       const officerId = document.getElementById("filterOpOfficer").value;
       const checkpointUid = document.getElementById("filterOpCheckpoint").value;
 
-      // Parsing Tanggal Mulai dan Akhir
       let startDateTime = sDate ? new Date(sDate + "T00:00:00").getTime() : null;
       let endDateTime = eDate ? new Date(eDate + "T23:59:59").getTime() : null;
 
-      // Cari Aturan Shift jika dipilih
       let activeShiftRule = cachedSchedules.find(s => s.id === shiftId);
 
       const filteredLogs = cachedLogs.filter(log => {
         if (!log) return false;
         
-        // 1. Filter Tanggal
         if (log.timestamp) {
           const logTime = new Date(log.timestamp).getTime();
           if (startDateTime && logTime < startDateTime) return false;
           if (endDateTime && logTime > endDateTime) return false;
         }
 
-        // 2. Filter ID Petugas
         if (officerId && log.officerId !== officerId) {
           return false;
         }
 
-        // 3. Filter Checkpoint ID/UID
         if (checkpointUid && log.uid !== checkpointUid) {
           return false;
         }
 
-        // 4. Filter Nama Shift
         if (activeShiftRule && log.timestamp) {
           const logDateObj = new Date(log.timestamp);
           const logHours = logDateObj.getHours();
           const logMinutes = logDateObj.getMinutes();
           const logTimeInMinutes = logHours * 60 + logMinutes;
 
-          // Parsing rules shift
           const [sH, sM] = activeShiftRule.startTime.split(':').map(Number);
           const [eH, eM] = activeShiftRule.endTime.split(':').map(Number);
           
@@ -1245,12 +1239,10 @@
           const shiftEndInMinutes = eH * 60 + eM;
 
           if (shiftStartInMinutes <= shiftEndInMinutes) {
-            // Shift Normal (misal 08:00 - 17:00)
             if (logTimeInMinutes < shiftStartInMinutes || logTimeInMinutes > shiftEndInMinutes) {
               return false;
             }
           } else {
-            // Shift Lewat Tengah Malam (misal 20:00 - 04:00)
             if (logTimeInMinutes < shiftStartInMinutes && logTimeInMinutes > shiftEndInMinutes) {
               return false;
             }
@@ -1260,7 +1252,6 @@
         return true;
       });
 
-      // Render ke tabel Operator
       const tbody = document.getElementById("operatorLogsTableBody");
       document.getElementById("filteredCountInfo").innerText = `Menampilkan ${filteredLogs.length} dari ${cachedLogs.length} data log patroli`;
       
@@ -1303,8 +1294,6 @@
       applyOpFilters();
       showToast("Filter pencarian dibersihkan", "info");
     }
-
-    // Fungsi redirectToOperatorPrint() dihapus agar admin tidak memiliki akses navigasi ke menu cetak operator
 
     /**
      * OFFICER LOGIC & RFID TAPPING
@@ -1378,7 +1367,7 @@
                 const logStatus = log.status ? log.status.toString() : '';
                 const isSesuai = logStatus.includes('Sesuai');
                 return `
-                  <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+                  <tr class="hover:bg-slate-50 transition border-b border-slate-100 text-sm">
                     <td class="py-3 px-6 font-semibold">${formattedDate}</td>
                     <td class="py-3 px-6 text-slate-800 font-bold">${log.location || '-'}</td>
                     <td class="py-3 px-6 font-mono text-xs text-slate-400">${log.uid || '-'}</td>
@@ -1455,18 +1444,56 @@
     }
 
     /**
-     * Memproses RFID setelah berhasil terbaca sensor NFC (Termasuk Proteksi Tapping Ganda & Safety Timeout)
+     * Memproses RFID setelah berhasil terbaca sensor NFC (Termasuk Proteksi Tapping Ganda Ketat & Safety Timeout)
      */
     function handleRfidScanned(uid) {
       if (!currentUser) return;
 
-      // 1. Validasi Cooldown di Sisi Klien
-      const now = Date.now();
-      if (lastTapTimes[uid] && (now - lastTapTimes[uid] < TAPPING_COOLDOWN_MS)) {
-        const remainingSec = Math.ceil((TAPPING_COOLDOWN_MS - (now - lastTapTimes[uid])) / 1000);
-        showToast(`RFID ini baru saja di-tap! Mohon tunggu ${remainingSec} detik lagi untuk berpatroli kembali di titik yang sama.`, "warning");
-        return;
+      // ---------------- LOGIKA KLAYEN: BLOKIR INSTAN JIKA SUDAH TAP DI SHIFT AKTIF HARI INI ----------------
+      let activeShift = null;
+      const now = new Date();
+      const currentHourMin = now.toTimeString().substring(0, 5); 
+      
+      if (currentUser.role === "Admin") {
+        const adminShiftId = (document.getElementById("adminShiftName") && document.getElementById("adminShiftName").dataset.scheduleId) || "";
+        activeShift = cachedSchedules.find(s => s.id === adminShiftId);
+      } else {
+        const activeShiftId = document.getElementById("activeShiftName").dataset.scheduleId || "";
+        activeShift = cachedSchedules.find(s => s.id === activeShiftId);
       }
+      
+      if (activeShift) {
+        const todayStr = now.toISOString().split('T')[0]; 
+        let shiftStart = new Date(todayStr + "T" + activeShift.startTime + ":00");
+        let shiftEnd = new Date(todayStr + "T" + activeShift.endTime + ":00");
+        
+        if (activeShift.startTime > activeShift.endTime) {
+          if (currentHourMin < activeShift.endTime) {
+            const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            const yesterdayStr = yesterday.toISOString().split('T')[0];
+            shiftStart = new Date(yesterdayStr + "T" + activeShift.startTime + ":00");
+          } else {
+            const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+            const tomorrowStr = tomorrow.toISOString().split('T')[0];
+            shiftEnd = new Date(tomorrowStr + "T" + activeShift.endTime + ":00");
+          }
+        }
+        
+        const alreadyTapped = cachedLogs.some(log => {
+          if (!log || !log.uid || log.uid.toLowerCase() !== uid.toLowerCase()) return false;
+          const logDate = new Date(log.timestamp);
+          if (isNaN(logDate.getTime())) return false;
+          
+          const logTimeMs = logDate.getTime();
+          return (logTimeMs >= shiftStart.getTime() && logTimeMs <= shiftEnd.getTime());
+        });
+        
+        if (alreadyTapped) {
+          showToast(`Lokasi ini sudah pernah di-tap pada shift "${activeShift.name}" hari ini! Batasan ketat: 1 kali tap saja.`, "warning");
+          return;
+        }
+      }
+      // ----------------------------------------------------------------------------------
       
       let notes = "";
       let activeShiftId = "";
@@ -1499,8 +1526,6 @@
           clearTimeout(safetyTimeout); 
           hideLoading();
           if (response.success) {
-            lastTapTimes[uid] = Date.now();
-
             showToast(`BERHASIL! Checkpoint Ter-Scan: "${response.location}". Status: ${response.status}`, "success");
             playBeep();
             
