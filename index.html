@@ -651,6 +651,13 @@
     let isWebNFCAvailable = false;
     let activeNFCScanMode = "PATROL";
 
+    // Mencegah klik / tap ganda saat proses penyimpanan sedang berlangsung (Race condition safety-lock)
+    let isSubmittingLog = false; 
+
+    // State pencegah ketuk ganda pada sisi Client (Memori lokal HP - Diperketat menjadi 5 Menit / 300 Detik)
+    let lastTapTimes = {};
+    const TAPPING_COOLDOWN_MS = 300000; // 5 Menit (300.000 Milidetik)
+
     // Auto-refresh timer reference
     let autoRefreshInterval = null;
 
@@ -1444,56 +1451,26 @@
     }
 
     /**
-     * Memproses RFID setelah berhasil terbaca sensor NFC (Termasuk Proteksi Tapping Ganda Ketat & Safety Timeout)
+     * Memproses RFID setelah berhasil terbaca sensor NFC (Termasuk Proteksi Tapping Ganda Ketat 5 Menit & Safety Timeout)
      */
     function handleRfidScanned(uid) {
       if (!currentUser) return;
 
-      // ---------------- LOGIKA KLAYEN: BLOKIR INSTAN JIKA SUDAH TAP DI SHIFT AKTIF HARI INI ----------------
-      let activeShift = null;
-      const now = new Date();
-      const currentHourMin = now.toTimeString().substring(0, 5); 
-      
-      if (currentUser.role === "Admin") {
-        const adminShiftId = (document.getElementById("adminShiftName") && document.getElementById("adminShiftName").dataset.scheduleId) || "";
-        activeShift = cachedSchedules.find(s => s.id === adminShiftId);
-      } else {
-        const activeShiftId = document.getElementById("activeShiftName").dataset.scheduleId || "";
-        activeShift = cachedSchedules.find(s => s.id === activeShiftId);
+      // ---------------- PENGAMANAN PERTAMA: CEK APAKAH PERMINTAAN SEBELUMNYA SEDANG DIPROSES ----------------
+      if (isSubmittingLog) {
+        showToast("Proses penyimpanan sebelumnya sedang berjalan. Mohon tunggu.", "warning");
+        return;
       }
-      
-      if (activeShift) {
-        const todayStr = now.toISOString().split('T')[0]; 
-        let shiftStart = new Date(todayStr + "T" + activeShift.startTime + ":00");
-        let shiftEnd = new Date(todayStr + "T" + activeShift.endTime + ":00");
-        
-        if (activeShift.startTime > activeShift.endTime) {
-          if (currentHourMin < activeShift.endTime) {
-            const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-            const yesterdayStr = yesterday.toISOString().split('T')[0];
-            shiftStart = new Date(yesterdayStr + "T" + activeShift.startTime + ":00");
-          } else {
-            const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-            const tomorrowStr = tomorrow.toISOString().split('T')[0];
-            shiftEnd = new Date(tomorrowStr + "T" + activeShift.endTime + ":00");
-          }
-        }
-        
-        const alreadyTapped = cachedLogs.some(log => {
-          if (!log || !log.uid || log.uid.toLowerCase() !== uid.toLowerCase()) return false;
-          const logDate = new Date(log.timestamp);
-          if (isNaN(logDate.getTime())) return false;
-          
-          const logTimeMs = logDate.getTime();
-          return (logTimeMs >= shiftStart.getTime() && logTimeMs <= shiftEnd.getTime());
-        });
-        
-        if (alreadyTapped) {
-          showToast(`Lokasi ini sudah pernah di-tap pada shift "${activeShift.name}" hari ini! Batasan ketat: 1 kali tap saja.`, "warning");
-          return;
-        }
+
+      const cleanUid = uid.trim().toLowerCase();
+
+      // ---------------- PENGAMANAN KEDUA: CEK MEMORI COOLDOWN LOKAL (5 MENIT) ----------------
+      const now = Date.now();
+      if (lastTapTimes[cleanUid] && (now - lastTapTimes[cleanUid] < TAPPING_COOLDOWN_MS)) {
+        const remainingSec = Math.ceil((TAPPING_COOLDOWN_MS - (now - lastTapTimes[cleanUid])) / 1000);
+        showToast(`RFID ini baru saja di-tap! Mohon tunggu ${remainingSec} detik lagi untuk berpatroli kembali di titik yang sama.`, "warning");
+        return;
       }
-      // ----------------------------------------------------------------------------------
       
       let notes = "";
       let activeShiftId = "";
@@ -1506,16 +1483,19 @@
         activeShiftId = document.getElementById("activeShiftName").dataset.scheduleId || "";
       }
 
+      // Aktifkan lock untuk mencegah pemanggilan ganda beruntun
+      isSubmittingLog = true;
       showLoading("Menyimpan Log Patroli...");
 
       // SAFETY TIMEOUT FALLBACK - Mencegah stuck loading jika koneksi terputus di tengah jalan
       const safetyTimeout = setTimeout(() => {
+        isSubmittingLog = false;
         hideLoading();
-        showToast("Proses penyimpanan lambat. Silakan periksa kembali sinyal internet Anda.", "warning");
+        showToast("Proses penyimpanan lambat atau terputus. Silakan periksa koneksi internet Anda.", "warning");
       }, 15000); 
       
       const logData = {
-        uid: uid,
+        uid: cleanUid,
         officerId: currentUser.id,
         scheduleId: activeShiftId,
         notes: notes
@@ -1524,8 +1504,13 @@
       google.script.run
         .withSuccessHandler(response => {
           clearTimeout(safetyTimeout); 
+          isSubmittingLog = false;
           hideLoading();
+          
           if (response.success) {
+            // Berhasil disimpan -> Rekam timestamp di memori lokal agar tidak bisa di-tap ganda selama 5 menit
+            lastTapTimes[cleanUid] = Date.now();
+
             showToast(`BERHASIL! Checkpoint Ter-Scan: "${response.location}". Status: ${response.status}`, "success");
             playBeep();
             
@@ -1544,6 +1529,7 @@
               loadOfficerLogs(() => hideLoading());
             }
           } else if (response.isCooldown) {
+            // Sisi server mendeteksi cooldown aktif (misal user melakukan reload browser)
             showToast(response.message, "warning");
           } else {
             showToast("Gagal mencatat patroli.", "error");
@@ -1551,6 +1537,7 @@
         })
         .withFailureHandler(err => {
           clearTimeout(safetyTimeout); 
+          isSubmittingLog = false;
           hideLoading();
           showToast("Masalah Koneksi: " + err, "error");
         })
